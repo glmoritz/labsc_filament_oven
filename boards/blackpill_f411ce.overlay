@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) 2026 Guilherme Luiz Moritz
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Board overlay: WeAct STM32F411CE "Black Pill" — secondary CONTROL-ONLY target
+ * for the labsc_filament_oven controller on the dual-socket carrier. No Wi-Fi,
+ * so no OPC UA / networking here; this target exercises the control + safety
+ * core on the diversified MCU. See docs/ARCHITECTURE.md and the carrier pin map
+ * (labsc_zephyr_lorawan/PINMAP.md).
+ *
+ * LoRa-free oven variant: the LR1121 node and all USP/lr11xx includes are gone;
+ * the shared SPI1 bus carries only the two MAX6675 readers.
+ *
+ *   LEFT row                          RIGHT row
+ *   b0  PB12  LED1                    b6   PB0   TEMP2 CS (tc1 / SENSOR B)
+ *   b1  PB13  LED2                    b7   PA7   opto IN1 (contactor aux)
+ *   b2  PB14  LED3                    b9   PA5   opto IN2 (RFU / arm button)
+ *   b3  PB15  LED4                    b10  PA4   opto OUT2 (RFU)
+ *   b4  PA8   TEMP1 CS (tc0/SENSOR A) b11  PA3   USART2 RX (console)
+ *   b10 PB3   SPI1 SCK                b12  PA2   USART2 TX (console)
+ *   b11 PB4   SPI1 MISO               b13  PA1   SSR-enable keep-alive (555)
+ *   b12 PB5   SPI1 MOSI               b14  PA0   HW-watchdog / contactor pulse
+ *
+ * PA11/PA12 (USB D-/D+) are BANNED from carrier nets, so TEMP1 CS is on PA8
+ * (b4-left), not PA12. SPI1 uses the PB3/PB4/PB5 alternate mapping.
+ */
+
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+	chosen {
+		zephyr,console = &usart2;
+		zephyr,shell-uart = &usart2;
+	};
+	aliases {
+		tc0 = &tc0;
+		tc1 = &tc1;
+		keepalive-out = &keepalive_out;
+		hw-wdt-out = &hw_wdt_out;
+		opto-out2 = &opto_out2;
+		opto-in1 = &opto_in1;
+		opto-in2 = &opto_in2;
+		led0 = &led1;
+		led1 = &led2;
+		led2 = &led3;
+		led3 = &led4;
+	};
+
+	/* Status LEDs — BlackPill-only (no ESP32-C6 neighbour on rows b0-b3). */
+	status_leds {
+		compatible = "gpio-leds";
+		led1: led_1 { gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>; label = "LED1"; };
+		led2: led_2 { gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>; label = "LED2"; };
+		led3: led_3 { gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>; label = "LED3"; };
+		led4: led_4 { gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>; label = "LED4"; };
+	};
+
+	/*
+	 * Software-toggled safety pulse outputs (NEVER hardware PWM). See the
+	 * esp32c6 overlay and docs/ARCHITECTURE.md §"HARD DESIGN RULE".
+	 */
+	failsafe_outputs {
+		compatible = "gpio-leds";
+		keepalive_out: keepalive {
+			gpios = <&gpioa 1 GPIO_ACTIVE_HIGH>;    /* PA1, b13-right (D21) */
+			label = "SSR-enable keep-alive (555)";
+		};
+		hw_wdt_out: hw-wdt {
+			gpios = <&gpioa 0 GPIO_ACTIVE_HIGH>;    /* PA0, b14-right (D20) */
+			label = "HW-watchdog / contactor health pulse";
+		};
+	};
+
+	opto_outputs {
+		compatible = "gpio-leds";
+		opto_out2: out2 {
+			gpios = <&gpioa 4 GPIO_ACTIVE_LOW>;     /* PA4, b10-right (D15) */
+			label = "isolated 12V output 2 (RFU)";
+		};
+	};
+
+	/* ACTIVE LOW with external pull-ups: opto failure reads as asserted. */
+	opto_inputs {
+		compatible = "gpio-keys";
+		opto_in1: in1 {
+			gpios = <&gpioa 7 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* PA7, b7-right (D3) */
+			label = "contactor dry contact / aux";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+		opto_in2: in2 {
+			gpios = <&gpioa 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* PA5, b9-right (D23) */
+			label = "isolated 12V input 2 (RFU)";
+			zephyr,code = <INPUT_KEY_1>;
+		};
+	};
+};
+
+/* USART2 (PA2/PA3) is the only carrier-reachable UART — the console. */
+&usart1 {
+	status = "disabled";
+};
+
+&usart2 {
+	pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&spi1 {
+	status = "okay";
+	/* PB3/PB4/PB5 alternate mapping — one contiguous bus run on the carrier. */
+	pinctrl-0 = <&spi1_sck_pb3 &spi1_miso_pb4 &spi1_mosi_pb5>;
+	pinctrl-names = "default";
+
+	cs-gpios = <&gpioa 8 GPIO_ACTIVE_LOW>,   /* reg 0: TEMP1 (PA8, b4-left)  -> tc0 / SENSOR A */
+		   <&gpiob 0 GPIO_ACTIVE_LOW>;   /* reg 1: TEMP2 (PB0, b6-right) -> tc1 / SENSOR B */
+
+	tc0: max6675@0 {
+		compatible = "maxim,max6675";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(4)>;
+	};
+
+	tc1: max6675@1 {
+		compatible = "maxim,max6675";
+		reg = <1>;
+		spi-max-frequency = <DT_FREQ_M(4)>;
+	};
+};
+
+/*
+ * Bare (non-MCUboot) flash layout: a large code partition plus a 128 K storage
+ * sector (the smallest independently erasable unit at the top of STM32F4 flash)
+ * reserved for the future NVS mirror of the latched-fault record.
+ */
+/ {
+	chosen {
+		zephyr,code-partition = &slot0_partition;
+	};
+};
+
+&flash0 {
+	/delete-node/ partitions;
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		slot0_partition: partition@0 {
+			label = "image-0";
+			reg = <0x00000000 DT_SIZE_K(384)>;
+		};
+		storage_partition: partition@60000 {
+			label = "storage";
+			reg = <0x00060000 DT_SIZE_K(128)>;
+		};
+	};
+};

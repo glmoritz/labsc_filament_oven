@@ -1,0 +1,6 @@
+# Zephyr build output
+build/
+**/build/
+
+# Local editor / tool state
+*.swp

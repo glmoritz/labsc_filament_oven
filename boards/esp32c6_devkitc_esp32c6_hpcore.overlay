@@ -1,0 +1,171 @@
+/*
+ * Copyright (c) 2026 Guilherme Luiz Moritz
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Board overlay: ESP32-C6-DevKitC (interim host) for the labsc_filament_oven
+ * controller on the dual-socket carrier. See docs/ARCHITECTURE.md.
+ *
+ * This is the LoRa-free oven variant of the carrier overlay: the LR1121 node
+ * and all USP/lr11xx includes are removed; the shared SPI bus now carries only
+ * the two MAX6675 thermocouple readers. GPIO assignments are unchanged from the
+ * carrier pin map (labsc_zephyr_lorawan/PINMAP.md) — every net still lands on
+ * both the C6 and the BlackPill socket.
+ *
+ * Carrier constraints still honoured here:
+ *   - GPIO12/13 native USB               -> unused
+ *   - GPIO8 strapping + onboard RGB LED  -> unrouted (indicator parity)
+ *   - GPIO9 strapping                    -> unused
+ *   - GPIO15 JTAG-source strap           -> active-low OUTPUT only (OPTO_OUT2)
+ *   - GPIO16 ROM UART TX                 -> console, output-only
+ *
+ * Role assignment (architecture §"Sensors"):
+ *   tc0 = TEMP1 (D4) = SENSOR A, control zone, PID input.
+ *   tc1 = TEMP2 (D2) = SENSOR B, protection zone, absolute-limit only.
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp32c6-pinctrl.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+	aliases {
+		tc0 = &tc0;               /* SENSOR A — control */
+		tc1 = &tc1;               /* SENSOR B — protection */
+		keepalive-out = &keepalive_out;   /* SSR-enable pulse (555) */
+		hw-wdt-out = &hw_wdt_out;          /* external HW-watchdog / contactor pulse */
+		opto-out2 = &opto_out2;
+		opto-in1 = &opto_in1;              /* contactor dry contact / aux */
+		opto-in2 = &opto_in2;              /* RFU — arm-button candidate */
+	};
+
+	/*
+	 * Safety pulse outputs. Both are toggled from SOFTWARE only — never a
+	 * hardware PWM/LEDC/RMT peripheral. A hung CPU keeps hardware PWM running
+	 * forever and would silently defeat the missing-pulse detectors
+	 * (architecture §"HARD DESIGN RULE"). gpio-leds is reused only as a
+	 * generic GPIO-output binding.
+	 *
+	 *   keepalive_out : SSR-enable. 120 Hz keep-alive from the Output thread,
+	 *                   gated on ARMED + PID freshness + fault word. Stop -> 555
+	 *                   times out -> SSR gate power removed (layer 4).
+	 *   hw_wdt_out    : health pulse from the Watchdog thread, gated on overall
+	 *                   liveness + fault word == 0. Feeds the external hardware
+	 *                   watchdog (layer 3) and the contactor-enable missing-pulse
+	 *                   detector (layer 5), which re-arms only via the physical
+	 *                   button.
+	 */
+	failsafe_outputs {
+		compatible = "gpio-leds";
+		keepalive_out: keepalive {
+			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;   /* D21, b13-right (PA1) */
+			label = "SSR-enable keep-alive (555)";
+		};
+		hw_wdt_out: hw-wdt {
+			gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>;   /* D20, b14-right (PA0) */
+			label = "HW-watchdog / contactor health pulse";
+		};
+	};
+
+	/*
+	 * Isolated 12 V open-drain output. OUT2 sits on D15 (JTAG-source strap):
+	 * driven ACTIVE LOW into the opto with an external pull-up, so Hi-Z at reset
+	 * = pin high = strap satisfied AND output inactive. Never an input.
+	 */
+	opto_outputs {
+		compatible = "gpio-leds";
+		opto_out2: out2 {
+			gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;    /* D15, b10-right (PA4) */
+			label = "isolated 12V output 2 (RFU)";
+		};
+	};
+
+	/*
+	 * Optocoupled dry-contact inputs, ACTIVE LOW with external pull-ups: a
+	 * failed or unpowered optocoupler reads as ASSERTED, so a welded contactor
+	 * or lost feedback fails toward the alarm state (architecture §"Contactor
+	 * & Interlock"). Validation-only via gpio-keys; no input driver is enabled.
+	 */
+	opto_inputs {
+		compatible = "gpio-keys";
+		opto_in1: in1 {
+			gpios = <&gpio0 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;    /* D3, b7-right (PA7) */
+			label = "contactor dry contact / aux";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+		opto_in2: in2 {
+			gpios = <&gpio0 23 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* D23, b11-right (PA5) */
+			label = "isolated 12V input 2 (RFU)";
+			zephyr,code = <INPUT_KEY_1>;
+		};
+	};
+};
+
+/*
+ * Shared SPI bus for the two MAX6675 readers: SCLK=GPIO6, MISO=GPIO7,
+ * MOSI=GPIO0 (unused by the read-only MAX6675 but part of the bus pinctrl).
+ */
+&pinctrl {
+	spim2_tc: spim2_tc {
+		group1 {
+			pinmux = <SPIM2_MISO_GPIO7>,
+				 <SPIM2_SCLK_GPIO6>;
+		};
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO0>;
+			output-low;
+		};
+	};
+};
+
+/* i2c0 shares GPIO6/GPIO7 with spi2; disable so the TC bus owns them. */
+&i2c0 {
+	status = "disabled";
+};
+
+/*
+ * Radios are off for the control/bootstrap milestone. The OPC-UA-over-Wi-Fi
+ * milestone re-enables &wifi; leave it disabled until then to keep the RAM
+ * footprint honest.
+ */
+&wifi {
+	status = "disabled";
+};
+&esp32_bt_hci {
+	status = "disabled";
+};
+&ieee802154 {
+	status = "disabled";
+};
+
+&spi2 {
+	status = "okay";
+	pinctrl-0 = <&spim2_tc>;
+	pinctrl-names = "default";
+
+	/*
+	 * One CS per device, indexed by each child's reg. Separate CS lines with
+	 * independent pull-ups so a floating CS during reset cannot leave a
+	 * converter driving MISO (architecture §"Shared-bus common-cause").
+	 * Neither CS sits on a strapping pin.
+	 */
+	cs-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>,   /* reg 0: TEMP1 (D4, b8-left)  -> tc0 / SENSOR A */
+		   <&gpio0 2 GPIO_ACTIVE_LOW>;   /* reg 1: TEMP2 (D2, b6-right) -> tc1 / SENSOR B */
+
+	/*
+	 * Two MAX6675 K-type thermocouple-to-digital converters. Read-only
+	 * (SCK + SO + CS, no MOSI); SO tri-states when deselected. Conversion
+	 * ~0.17-0.22 s, comfortably inside the 500 ms PID period. NOTE: MAX6675
+	 * detects OPEN thermocouple only (no short-to-GND/VCC) — the protection
+	 * sensor (tc1) would ideally be a MAX31855/31856; tracked in SAFETY-STATUS.
+	 */
+	tc0: max6675@0 {
+		compatible = "maxim,max6675";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(4)>;
+	};
+
+	tc1: max6675@1 {
+		compatible = "maxim,max6675";
+		reg = <1>;
+		spi-max-frequency = <DT_FREQ_M(4)>;
+	};
+};
