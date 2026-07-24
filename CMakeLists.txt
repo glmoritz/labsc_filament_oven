@@ -14,6 +14,7 @@ target_sources(app PRIVATE
   src/shared.c
   src/fault.c
   src/oven_state.c
+  src/pid.c
   src/pid_thread.c
   src/output_thread.c
   src/watchdog_thread.c

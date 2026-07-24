@@ -99,6 +99,30 @@ The always-on, demonstrable software pulse is **`hw-wdt-out`**: it runs from boo
 while healthy and stops the instant a fault latches (put a scope / logic analyzer
 on `OUT1_3V3`).
 
+## PID control law
+
+`src/pid.c` implements the discrete PID from `PID.pdf` (parallel form,
+trapezoidal integrator, filtered derivative) in **fixed-point integer** math
+(no FPU dependence), with three review-agreed changes:
+
+- **Derivative on measurement**, not error — no setpoint kick.
+- **Pole-matched derivative filter** (`a = e^{-N·Ts}`), unconditionally stable
+  for any `N`, replacing the PDF's forward-Euler pole which needs `N·Ts < 2`.
+  Default **`Kd = 0`** (runs as PI); the plant is slow and the MAX6675 quantizes
+  at 0.25 °C, so derivative earns little — enable it only if the bench shows a
+  benefit.
+- **Clamping anti-windup** at both rails (the heater is one-directional, so it
+  saturates at 0 too), plus bumpless retune and a clean restart on arming.
+
+Gains are `x1000` fixed-point in the `g_kp_m`/`g_ki_m`/`g_kd_m` atomics; setpoint
+and temperatures are centi-°C; output is `0..120` half-cycles. Default gains are
+**0**, so the controller is inert and safe until tuned (via `oven gains` /
+`oven sp` on the bench, or OPC UA later). The law is host-unit-tested:
+
+```bash
+./tests/pid/run.sh      # compiles src/pid.c on the host and runs 15 checks
+```
+
 ## Implemented vs stubbed
 
 | Area | State |
@@ -111,7 +135,7 @@ on `OUT1_3V3`).
 | System state machine, boot-DISARMED, boot-into-FAULTED latching (noinit + CRC) | **implemented** |
 | PID deadline + PID/Output/timer staleness detection | **implemented** |
 | Test shell / fault-injection seed | **implemented (debug build)** |
-| PID control law (anti-windup, D-on-measurement, bumpless) | **stub** (power held 0) |
+| PID control law — fixed-point, D-on-measurement, pole-matched filter, clamping anti-windup (both rails), bumpless retune | **implemented** (`src/pid.c`; default gains 0 = inert) |
 | Process diagnostics (ON-but-flat, OFF-but-rising, rate) | **TODO** |
 | Contactor arm/disarm load-free sequencing + aux proof-test | **TODO** |
 | On-chip watchdog reset path (needs a `watchdog0` alias) | **compiled out** |

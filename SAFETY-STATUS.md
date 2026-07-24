@@ -28,7 +28,7 @@ a real heater unattended.**
 | Sensor-B absolute limit (independent of setpoint) | done | `pid_thread.c` |
 | Software-only pulse generation (no HW PWM) | done | `output_thread.c`, `watchdog_thread.c` |
 | Pinned thread priorities, self-asserted | done | `oven_threads.h`, each thread |
-| PID control law | **stub** | heater power held at 0 |
+| PID control law (fixed-point; D-on-measurement; clamping anti-windup; bumpless) | **done** | `pid.c`, host-tested (`tests/pid/run.sh`); default gains 0 = inert |
 | Process-response diagnostics | **TODO** | ON-but-flat, OFF-but-rising, rate plausibility |
 | Contactor load-free sequencing + aux proof-test | **TODO** | needs aux-contact input mapping |
 | On-chip watchdog reset → FAULTED | **compiled out** | add a `watchdog0` alias to enable |

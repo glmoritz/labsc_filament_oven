@@ -7,15 +7,17 @@
  * checks the protection-zone absolute limit, computes the control output, and
  * publishes actuator + telemetry + a liveness counter.
  *
- * BOOTSTRAP SCOPE: the acquisition, validation, safety-limit and liveness paths
- * are real. The PID math itself is a STUB (heater power held at 0 = safe). No
- * process diagnostics yet. No dynamic allocation; no unbounded blocking (the
- * only wait is the bounded, driver-internal SPI transfer inside the MAX6675
- * sensor read).
+ * The acquisition, validation, safety-limit, control-law and liveness paths are
+ * real. The control law is the fixed-point PID in pid.c (default gains 0 -> inert
+ * and safe until tuned). Process diagnostics are not implemented yet. No dynamic
+ * allocation; no unbounded blocking (the only wait is the bounded, driver-internal
+ * SPI transfer inside the MAX6675 sensor read).
  */
 
 #include "shared.h"
 #include "oven_threads.h"
+#include "oven_state.h"
+#include "pid.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -29,6 +31,7 @@ static const struct device *const s_tc_b = DEVICE_DT_GET(DT_ALIAS(tc1));
 
 static struct k_sem s_release;
 static struct k_timer s_release_timer;
+static struct pid_state s_pid;
 
 /* Timer ISR context: release the PID cycle and beat the timer-progress heart. */
 static void release_timer_cb(struct k_timer *timer)
@@ -106,16 +109,32 @@ static void pid_cycle(void)
 	/* 5. Process diagnostics: TODO (ON-but-flat, OFF-but-rising, rate). */
 
 	/*
-	 * 6-7. Compute PID and publish actuator command.
-	 * STUB: no control law yet. Hold the heater at 0 so the skeleton is
-	 * inert and safe. When implemented, respect anti-windup, derivative-on-
-	 * measurement and bumpless retune (architecture, "PID hygiene"), and use
-	 * only sensor A. Never command power while any fault is latched.
+	 * 6-7. Compute the control law (sensor A only) and publish the actuator
+	 * command. The controller runs only when ARMED and fault-free and the
+	 * control reading is valid; otherwise it is held inactive (output 0,
+	 * integrator frozen, derivative still tracking). The Output thread applies
+	 * SSR enable on top of this; a non-zero command never energizes anything
+	 * while disarmed or faulted.
 	 */
-	if (a_ok && (fault_word_get() == 0U)) {
-		(void)atomic_set(&g_heater_power, 0);
-	} else {
-		(void)atomic_set(&g_heater_power, 0);
+	{
+		struct pid_gains gains;
+		bool active;
+		uint32_t power;
+		oven_temp_cc_t setpoint;
+		oven_temp_cc_t pv_a;
+
+		gains.kp_m = (int32_t)atomic_get(&g_kp_m);
+		gains.ki_m = (int32_t)atomic_get(&g_ki_m);
+		gains.kd_m = (int32_t)atomic_get(&g_kd_m);
+		setpoint = (oven_temp_cc_t)atomic_get(&g_setpoint_cc);
+		pv_a = (oven_temp_cc_t)atomic_get(&g_temp_a_cc);
+
+		active = a_ok &&
+			 (oven_state_get() == OVEN_STATE_ARMED) &&
+			 (fault_word_get() == 0U);
+
+		power = pid_update(&s_pid, &gains, setpoint, pv_a, active);
+		(void)atomic_set(&g_heater_power, (atomic_val_t)power);
 	}
 
 	/* 8-9. Telemetry already published above; advance the liveness counter. */
@@ -165,6 +184,7 @@ K_THREAD_DEFINE(pid_tid, OVEN_PID_STACK_SIZE, pid_thread_entry,
 
 void pid_thread_start(void)
 {
+	pid_reset(&s_pid);
 	k_sem_init(&s_release, 0, 1);
 	k_timer_init(&s_release_timer, release_timer_cb, NULL);
 	k_timer_start(&s_release_timer,

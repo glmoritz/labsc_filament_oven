@@ -10,6 +10,8 @@
  *   oven arm               operator arm request (DISARMED -> ARMED)
  *   oven disarm            operator disarm request
  *   oven fault <hexbits>   inject fault bits (latches FAULTED)
+ *   oven sp <centi-degC>   set control setpoint
+ *   oven gains <kp> <ki> <kd>   set PID gains (each x1000)
  */
 
 #ifdef CONFIG_SHELL
@@ -80,12 +82,48 @@ static int cmd_fault(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_sp(const struct shell *sh, size_t argc, char **argv)
+{
+	long sp;
+
+	if (argc != 2) {
+		shell_error(sh, "usage: oven sp <centi-degC>");
+		return -EINVAL;
+	}
+
+	sp = strtol(argv[1], NULL, 10);
+	(void)atomic_set(&g_setpoint_cc, (atomic_val_t)sp);
+	shell_print(sh, "setpoint = %ld cC", sp);
+
+	return 0;
+}
+
+static int cmd_gains(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc != 4) {
+		shell_error(sh, "usage: oven gains <kp_m> <ki_m> <kd_m>  (each x1000)");
+		return -EINVAL;
+	}
+
+	(void)atomic_set(&g_kp_m, (atomic_val_t)strtol(argv[1], NULL, 10));
+	(void)atomic_set(&g_ki_m, (atomic_val_t)strtol(argv[2], NULL, 10));
+	(void)atomic_set(&g_kd_m, (atomic_val_t)strtol(argv[3], NULL, 10));
+	shell_print(sh, "gains x1000: kp=%ld ki=%ld kd=%ld",
+		    (long)atomic_get(&g_kp_m), (long)atomic_get(&g_ki_m),
+		    (long)atomic_get(&g_kd_m));
+
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(oven_sub,
 	SHELL_CMD(status, NULL, "Show controller status", cmd_status),
 	SHELL_CMD(arm,    NULL, "Operator arm request",   cmd_arm),
 	SHELL_CMD(disarm, NULL, "Operator disarm request", cmd_disarm),
 	SHELL_CMD_ARG(fault, NULL, "Inject fault bits: oven fault <hexbits>",
 		      cmd_fault, 2, 0),
+	SHELL_CMD_ARG(sp, NULL, "Set setpoint: oven sp <centi-degC>", cmd_sp, 2, 0),
+	SHELL_CMD_ARG(gains, NULL, "Set gains: oven gains <kp> <ki> <kd> (x1000)",
+		      cmd_gains, 4, 0),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(oven, &oven_sub, "labsc_filament_oven test harness", NULL);

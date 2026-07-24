@@ -4,3 +4,6 @@ build/
 
 # Local editor / tool state
 *.swp
+
+# host test binary
+tests/pid/pid_test
