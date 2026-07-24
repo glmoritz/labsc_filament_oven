@@ -7,3 +7,4 @@ build/
 
 # host test binary
 tests/pid/pid_test
+tests/pid/pid_clamp_test
