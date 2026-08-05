@@ -1,0 +1,101 @@
+/*
+ * Copyright (c) 2026 Guilherme Luiz Moritz
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * BENCH DEBUG OVERLAY — ESP32-C6-DevKitC. Applied only by the debug build
+ * (scripts/zephyr-project.sh adds it as EXTRA_DTC_OVERLAY_FILE whenever
+ * debug.conf is in play). NEVER part of a field image: it lights the on-module
+ * RGB LED and re-routes the log stream, neither of which belongs on a control
+ * unit.
+ *
+ * Two things are added here:
+ *
+ *   1. The on-module WS2812 RGB LED on GPIO8, driven over I2S.
+ *   2. The log stream, moved off the console UART onto the built-in
+ *      USB-Serial-JTAG (/dev/ttyACM0).
+ *
+ * --- Why I2S and not RMT/SPI/GPIO ------------------------------------------
+ * This Zephyr has no ESP32 RMT driver, and the WS2812 GPIO bit-bang driver is
+ * nRF-only (CONFIG_WS2812_STRIP_GPIO depends on SOC_SERIES_NRF*). That leaves
+ * SPI, UART and I2S. SPI is out: spi2 is the two MAX6675 thermocouple readers,
+ * i.e. the safety sensor bus, and an indicator LED does not get to share it.
+ * I2S is what Espressif themselves use for this exact board — see upstream
+ * samples/drivers/led/led_strip/boards/esp32c6_devkitc_hpcore.overlay, which
+ * this section follows. The I2S peripheral is otherwise unused by this
+ * application, so the LED path touches nothing the controller depends on.
+ *
+ * --- Why group1 is REPLACED, not extended ----------------------------------
+ * CRITICAL. The board's stock i2s_default pinctrl claims five pins:
+ *
+ *     I2S_MCLK_GPIO5, I2S_O_WS_GPIO6, I2S_O_BCK_GPIO7,
+ *     I2S_O_SD_GPIO8,  I2S_I_SD_GPIO23
+ *
+ * GPIO6 and GPIO7 are SPI SCLK and MISO on this carrier — the thermocouple
+ * bus. Leaving them in the I2S group would hand the safety bus's clock and data
+ * lines to the I2S peripheral. The assignment below REPLACES the property with
+ * the single serial-data pin, so I2S drives GPIO8 and nothing else. If you ever
+ * edit this group, keep it to one pin.
+ *
+ * GPIO8 itself is safe to drive: it is a boot strapping pin, but straps are
+ * sampled only at reset, and the carrier deliberately leaves it unrouted
+ * (see the board overlay's "GPIO8 strapping + onboard RGB LED -> unrouted").
+ */
+
+#include <zephyr/dt-bindings/led/led.h>
+
+/ {
+	aliases {
+		debug-led = &debug_led;
+	};
+
+	chosen {
+		/*
+		 * Send the log stream to the USB-Serial-JTAG instead of the
+		 * console UART. On this devkit uart0 is the ROM/console UART on
+		 * GPIO16/17 — a physically different connector from the USB port
+		 * that enumerates as /dev/ttyACM0. Keeping the console and shell
+		 * on uart0 and the diagnostics here means the per-cycle PID trace
+		 * cannot drown the console, and it lands on the port that is
+		 * actually plugged in during bench work.
+		 */
+		zephyr,log-uart = &oven_log_uarts;
+	};
+
+	oven_log_uarts: log-uarts {
+		compatible = "zephyr,log-uart";
+		uarts = <&usb_serial>;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+/* See the header: this REPLACES the stock five-pin group. One pin only. */
+&i2s_default {
+	group1 {
+		pinmux = <I2S_O_SD_GPIO8>;
+	};
+};
+
+&i2s {
+	status = "okay";
+
+	dmas = <&dma 3>;
+	dma-names = "tx";
+
+	debug_led: ws2812@0 {
+		compatible = "worldsemi,ws2812-i2s";
+
+		reg = <0>;
+		chain-length = <1>;
+		color-mapping = <LED_COLOR_ID_GREEN
+				 LED_COLOR_ID_RED
+				 LED_COLOR_ID_BLUE>;
+		reset-delay = <500>;
+	};
+};
+
+&dma {
+	status = "okay";
+};

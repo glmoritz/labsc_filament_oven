@@ -18,6 +18,7 @@
 #include "fault.h"
 #include "oven_state.h"
 #include "oven_threads.h"
+#include "oven_debug.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -144,6 +145,13 @@ int main(void)
 
 	/* 5. Leave INIT: DISARMED unless a fault already latched FAULTED. */
 	oven_state_boot_ok();
+
+	/*
+	 * 5b. Bench instrumentation, if this image has any. Empty inline in a
+	 * field build. Runs before the threads are released so the first control
+	 * cycle already sees any preset tuning. Arms nothing.
+	 */
+	oven_debug_init();
 
 	/* 6. Release the threads. */
 	(void)atomic_set(&g_init_done, 1);

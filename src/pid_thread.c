@@ -18,6 +18,7 @@
 #include "oven_threads.h"
 #include "oven_state.h"
 #include "pid.h"
+#include "pid_pub.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -88,7 +89,7 @@ static bool acquire_sensor(const struct device *dev, atomic_t *telemetry,
 	return ok;
 }
 
-static void pid_cycle(void)
+static void pid_cycle(uint32_t delta_ms)
 {
 	bool a_ok;
 	bool b_ok;
@@ -139,6 +140,16 @@ static void pid_cycle(void)
 
 	/* 8-9. Telemetry already published above; advance the liveness counter. */
 	(void)atomic_inc(&g_pid_seq);
+
+	/*
+	 * 10. Publish this cycle's internals for any diagnostics consumer.
+	 *
+	 * UNCONDITIONAL, in every build — see pid_pub.h. A field image compiles
+	 * no consumer and the data goes nowhere, which is the point: the control
+	 * loop must not have one instruction path on the bench and another in the
+	 * field. Wait-free; it cannot block or fail.
+	 */
+	pid_pub_publish((uint32_t)atomic_get(&g_pid_seq), delta_ms, &s_pid.diag);
 }
 
 static void pid_thread_entry(void *p1, void *p2, void *p3)
@@ -175,7 +186,7 @@ static void pid_thread_entry(void *p1, void *p2, void *p3)
 		}
 		started = true;
 
-		pid_cycle();
+		pid_cycle(delta_ms);
 	}
 }
 

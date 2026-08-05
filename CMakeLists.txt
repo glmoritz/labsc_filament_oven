@@ -15,11 +15,16 @@ target_sources(app PRIVATE
   src/fault.c
   src/oven_state.c
   src/pid.c
+  src/pid_pub.c
   src/pid_thread.c
   src/output_thread.c
   src/watchdog_thread.c
   src/shell_cmds.c
 )
+
+# Bench diagnostics consumer. The publication side (src/pid_pub.c) is in every
+# image by design — see pid_pub.h; only the reader is optional.
+target_sources_ifdef(CONFIG_OVEN_DEBUG app PRIVATE src/oven_debug.c)
 
 # --- Workaround: hal_espressif ESP32-C6 SPI HAL bug --------------------------
 # In the hal_espressif revision pinned by this container's Zephyr (main HEAD),

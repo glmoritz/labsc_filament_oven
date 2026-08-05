@@ -77,6 +77,16 @@ BUILD_ASSERT(((PID_FP * (int64_t)OVEN_PID_PERIOD_MS) % (2 * 1000 * OVEN_GAIN_SCA
 /* Maximum |error| the physical window allows; used as a tripwire assert. */
 #define PID_E_MAX       ((int32_t)(OVEN_TEMP_VALID_MAX_CC - OVEN_TEMP_VALID_MIN_CC))
 
+/*
+ * The diagnostics capture below is UNCONDITIONAL — see the pid_diag comment in
+ * pid.h. Statements that exist only to record the cycle are marked "diag:" so
+ * they are obvious to a reader, but they are never compiled out: this file has
+ * no debug/release variant. Everything so marked is pure recording; the control
+ * law must never read it back.
+ */
+BUILD_ASSERT(PID_FP == OVEN_PID_TRACE_SCALE,
+	     "trace scale advertised in pid.h must match the internal signal scale");
+
 /* ---- Input validators: assert (catch caller bugs) AND clamp (stay safe). ---- */
 
 static int32_t validate_gain(int32_t v, const char *name)
@@ -111,6 +121,8 @@ void pid_reset(struct pid_state *st)
 	st->g_prev.kd_m = 0;
 	st->primed = false;
 	st->active_prev = false;
+	/* diag: start from a clean record so nothing stale is ever published. */
+	st->diag = (struct pid_diag){0};
 }
 
 static bool gains_changed(const struct pid_gains *a, const struct pid_gains *b)
@@ -130,6 +142,11 @@ uint32_t pid_update(struct pid_state *st, const struct pid_gains *g,
 	int64_t g_d_u;
 	int64_t out_u;
 	uint32_t out;
+	/* diag: recording scratch. Written here, never read by the control law. */
+	int64_t diag_y_unsat_u = 0;
+	int8_t diag_sat = (int8_t)PID_SAT_NONE;
+	bool diag_retuned = false;
+	bool diag_arm_edge = false;
 
 	/* ---- 0. Trust nothing. Validate the caller's pointers and data. ---- */
 	__ASSERT(st != NULL, "pid_update: NULL state");
@@ -216,6 +233,7 @@ uint32_t pid_update(struct pid_state *st, const struct pid_gains *g,
 		if (!st->active_prev) {
 			/* DISARMED->ARMED edge: start the integrator clean. */
 			st->yi_u = 0;
+			diag_arm_edge = true;   /* diag */
 		} else if (gains_changed(&gv, &st->g_prev)) {
 			/*
 			 * Bumpless retune: reconcile the integrator so the output
@@ -223,8 +241,35 @@ uint32_t pid_update(struct pid_state *st, const struct pid_gains *g,
 			 * introduces no jump; normal control resumes from there).
 			 */
 			st->yi_u = st->y_prev_u - yp_u - st->yd_u;
+			diag_retuned = true;    /* diag */
 		} else {
 			/* no integrator adjustment this cycle */
+		}
+
+		/*
+		 * ---- No integral action means no integral state ----
+		 * With Ki == 0 the accumulator can never evolve again: the
+		 * increment below is identically zero, so whatever is in yi_u
+		 * stays there forever. The bumpless retune above deposits
+		 * exactly such a residue — reconciling the integrator is how it
+		 * keeps the output continuous — and with Ki == 0 nothing washes
+		 * it out. The controller then reports a P-only law while quietly
+		 * adding a constant bias, which is indefensible for tuning and
+		 * worse for review.
+		 *
+		 * So: zero it. This is DELIBERATELY not bumpless — switching the
+		 * integral term off is allowed to step the output, because the
+		 * alternative is a hidden offset that outlives the gain that
+		 * created it. Turning I off is a structural change to the control
+		 * law, not a retune.
+		 *
+		 * Placed after the chain above so it overrides both the arm-edge
+		 * reset and the retune reconciliation, and runs on every cycle:
+		 * it also clears a wound-up integrator the moment Ki is set to 0,
+		 * not just on the cycle where the gain changed.
+		 */
+		if (gv.ki_m == 0) {
+			st->yi_u = 0;
 		}
 
 		/*
@@ -246,12 +291,15 @@ uint32_t pid_update(struct pid_state *st, const struct pid_gains *g,
 		 * actuator is one-directional, so 0 is a real rail too.
 		 */
 		y_unsat_u = yp_u + st->yi_u + st->yd_u;
+		diag_y_unsat_u = y_unsat_u;   /* diag */
 		if (y_unsat_u > PID_MAX_U) {
 			st->yi_u = PID_MAX_U - yp_u - st->yd_u;
 			out_u = PID_MAX_U;
+			diag_sat = (int8_t)PID_SAT_HIGH;   /* diag */
 		} else if (y_unsat_u < 0) {
 			st->yi_u = -yp_u - st->yd_u;
 			out_u = 0;
+			diag_sat = (int8_t)PID_SAT_LOW;    /* diag */
 		} else {
 			out_u = y_unsat_u;
 		}
@@ -270,6 +318,26 @@ uint32_t pid_update(struct pid_state *st, const struct pid_gains *g,
 	__ASSERT((out_u >= 0) && (out_u <= PID_MAX_U), "pid: out_u out of range");
 	out = (uint32_t)((out_u + (PID_FP / 2)) / PID_FP);
 	__ASSERT(out <= OVEN_HEATER_MAX_POWER, "pid: output exceeds heater max");
+
+	/*
+	 * ---- diag: record the cycle ----
+	 * Last thing before the histories roll over, so every field is the final
+	 * value this cycle actually used. Recording only; nothing below reads it.
+	 */
+	st->diag.sp_cc = sp;
+	st->diag.pv_cc = pv;
+	st->diag.e_cc = e;
+	st->diag.dpv_cc = dpv;
+	st->diag.g = gv;
+	st->diag.yp_u = yp_u;
+	st->diag.yi_u = st->yi_u;
+	st->diag.yd_u = st->yd_u;
+	st->diag.y_unsat_u = diag_y_unsat_u;
+	st->diag.out = out;
+	st->diag.sat = diag_sat;
+	st->diag.retuned = diag_retuned;
+	st->diag.arm_edge = diag_arm_edge;
+	st->diag.active = active;
 
 	/* ---- Commit histories (store the VALIDATED gains for next compare). ---- */
 	st->e_prev = e;
