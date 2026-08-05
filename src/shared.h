@@ -92,6 +92,7 @@ enum oven_fault_bit {
 	OVEN_FAULT_DEVICE_INIT    = (1 << 9),  /* a required device is not ready  */
 	OVEN_FAULT_BROWNOUT       = (1 << 10), /* brownout reset reason           */
 	OVEN_FAULT_RESTORED       = (1 << 11), /* a latched fault survived reboot */
+	OVEN_FAULT_ASSERT         = (1 << 13), /* firmware invariant failed (soft assert) */
 };
 
 
