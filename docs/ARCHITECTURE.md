@@ -32,6 +32,43 @@ The controller shall:
 5. **Missing-pulse detector #2 (contactor enable)** — interlocked relay + contactor drop out on missing pulse; re-arm **only** via physical button.
 6. **Independent thermal cutoff** — mechanical capillary safety thermostat and/or one-shot thermal fuse with its switching element **in series with the heater power line**, breaking load current directly. It must NOT act via the contactor coil: a coil-series cutoff depends on the contactor opening and is defeated by welded contacts — exactly the failure this layer exists to survive. No firmware involved. Non-negotiable for unattended operation.
 
+## Contactor feedback failure modes
+
+The feedback is a phototransistor grounding an external pull-up, read ACTIVE LOW.
+**It can fail in both directions**, and there is no safe assumption to make about
+its resting level:
+
+- transistor shorted, or the line shorted to ground → reads always **CLOSED**
+- transistor open, LED burnt out, or broken wire → reads always **OPEN**
+
+An earlier version of this document and of the board overlay claimed that a
+failed or unpowered optocoupler reads as ASSERTED, i.e. that the sense fails
+toward alarm. **That claim was wrong** and has been removed. Nothing may be built
+on a fail direction for this part.
+
+What makes the feedback trustworthy is not its level but the requirement that it
+**CHANGE, on command, in a specific order**, before the oven may arm. The
+interlock sequence demands both logical states from the sensor at every single
+boot, so a sensor stuck at either one fails one of the phases:
+
+| Failure | Reads | Caught by | Result |
+|---|---|---|---|
+| Transistor shorted / line to GND | always CLOSED | Phase 1, quiet window: contactor must read open while the health pulse is silent | weld fault, latched FAULTED, never armable |
+| Transistor open / LED dead / broken wire | always OPEN | Phase 2: the open→closed transition is never observed | stays in AWAIT_CONTACTOR, never armable |
+| Dies stuck CLOSED mid-run | frozen closed | Drop-out deadline: at the next loss of health the contactor "fails to open" within 1 s | weld fault. May misdiagnose a healthy contactor — fails safe, in the right direction |
+| Dies stuck OPEN mid-run | frozen open | Read as the contactor having dropped | returns to AWAIT_CONTACTOR, disarmed; re-arming needs a fresh observed closure |
+
+The property that matters: **no failure of this sensor can cause the oven to
+heat when it should not.** Every one of them either latches a fault or prevents
+arming. The worst outcome is a false weld report, which stops a healthy machine —
+the acceptable direction to be wrong in.
+
+Residual, and accepted: between boot and the next loss of health, the sensor is
+never exercised, so a mid-run death is only caught when the state is next
+required to change. None of the intermediate windows is hazardous — a stuck
+reading cannot energize anything by itself, and the contactor is only one of six
+protection layers.
+
 ## Thermal ladder — as built
 
 Three rungs, each of which must trip well before the next, so the cheap

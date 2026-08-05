@@ -116,6 +116,16 @@ static void output_thread_entry(void *p1, void *p2, void *p3)
 			force_keepalive_off();
 		}
 
+		/*
+		 * The contactor is deliberately NOT watched here. This thread
+		 * owns the SSR keep-alive, which is gated on ARMED; the contactor
+		 * is enabled by the Watchdog thread's health pulse, which is not.
+		 * In normal operation the contactor stays closed across arm and
+		 * disarm, so judging it against this thread's output would fault
+		 * on every ordinary disarm. The interlock is watched where it is
+		 * commanded — see interlock_monitor() in watchdog_thread.c.
+		 */
+
 		/* 6. Advance the liveness counter and pace the loop. */
 		(void)atomic_inc(&g_output_seq);
 		k_sleep(K_USEC(OVEN_OUTPUT_PERIOD_US));

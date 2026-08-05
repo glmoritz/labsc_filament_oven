@@ -10,12 +10,35 @@
 
 static atomic_t s_state = ATOMIC_INIT((atomic_val_t)OVEN_STATE_INIT);
 
-void oven_state_boot_ok(void)
+bool oven_state_interlock_ready(void)
 {
-	/* INIT -> DISARMED only if still in INIT (a restored fault wins). */
-	(void)atomic_cas(&s_state,
-			 (atomic_val_t)OVEN_STATE_INIT,
-			 (atomic_val_t)OVEN_STATE_DISARMED);
+	/* INIT -> AWAIT_CONTACTOR only if still in INIT (a restored fault wins). */
+	return atomic_cas(&s_state,
+			  (atomic_val_t)OVEN_STATE_INIT,
+			  (atomic_val_t)OVEN_STATE_AWAIT_CONTACTOR);
+}
+
+bool oven_state_contactor_confirmed(void)
+{
+	return atomic_cas(&s_state,
+			  (atomic_val_t)OVEN_STATE_AWAIT_CONTACTOR,
+			  (atomic_val_t)OVEN_STATE_DISARMED);
+}
+
+void oven_state_contactor_lost(void)
+{
+	/*
+	 * Either armable state falls back to waiting for the manual interlock.
+	 * Two CAS attempts rather than a read-modify-write so a concurrent
+	 * transition to FAULTED always wins.
+	 */
+	if (!atomic_cas(&s_state,
+			(atomic_val_t)OVEN_STATE_ARMED,
+			(atomic_val_t)OVEN_STATE_AWAIT_CONTACTOR)) {
+		(void)atomic_cas(&s_state,
+				 (atomic_val_t)OVEN_STATE_DISARMED,
+				 (atomic_val_t)OVEN_STATE_AWAIT_CONTACTOR);
+	}
 }
 
 void oven_state_enter_faulted(void)
@@ -56,6 +79,9 @@ const char *oven_state_name(enum oven_state st)
 	switch (st) {
 	case OVEN_STATE_INIT:
 		name = "INIT";
+		break;
+	case OVEN_STATE_AWAIT_CONTACTOR:
+		name = "AWAIT_CONTACTOR";
 		break;
 	case OVEN_STATE_DISARMED:
 		name = "DISARMED";

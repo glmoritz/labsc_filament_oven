@@ -18,6 +18,7 @@
 
 #include "shared.h"
 #include "oven_state.h"
+#include "fault.h"
 
 #include <zephyr/shell/shell.h>
 #include <stdlib.h>
@@ -115,7 +116,33 @@ static int cmd_gains(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * Clear the PERSISTED fault record only — the noinit copy that survives a warm
+ * reset and re-latches FAULTED on the next boot.
+ *
+ * It deliberately does NOT touch the live fault word. That stays OR-only and
+ * uncleared at runtime (architecture, "Shared Variables"), so this cannot
+ * un-fault a running oven: the machine remains FAULTED and de-energized until it
+ * is rebooted, and the reboot is what actually clears things. Without this, a
+ * latched fault on the bench can only be cleared by pulling power, since noinit
+ * RAM survives every warm reset.
+ */
+static int cmd_clearlatch(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	fault_record_clear();
+	shell_print(sh, "persisted fault record cleared; live fault=0x%08x "
+		    "state=%s — reboot to take effect",
+		    fault_word_get(), oven_state_name(oven_state_get()));
+
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(oven_sub,
+	SHELL_CMD(clearlatch, NULL, "Clear the persisted fault record (reboot to apply)",
+		  cmd_clearlatch),
 	SHELL_CMD(status, NULL, "Show controller status", cmd_status),
 	SHELL_CMD(arm,    NULL, "Operator arm request",   cmd_arm),
 	SHELL_CMD(disarm, NULL, "Operator disarm request", cmd_disarm),

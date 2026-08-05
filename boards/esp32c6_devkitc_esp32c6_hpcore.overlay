@@ -90,10 +90,23 @@
 	};
 
 	/*
-	 * Optocoupled dry-contact inputs, ACTIVE LOW with external pull-ups: a
-	 * failed or unpowered optocoupler reads as ASSERTED, so a welded contactor
-	 * or lost feedback fails toward the alarm state (architecture §"Contactor
-	 * & Interlock"). Validation-only via gpio-keys; no input driver is enabled.
+	 * Optocoupled dry-contact inputs: a phototransistor grounding an external
+	 * pull-up, read ACTIVE LOW (contact closed -> LED lit -> transistor
+	 * conducts -> line low).
+	 *
+	 * CORRECTION: this comment used to claim that a failed or unpowered
+	 * optocoupler reads as ASSERTED, i.e. that the sense fails toward alarm.
+	 * That is NOT true of this topology — a dead phototransistor, a burnt LED
+	 * or a broken wire leaves the pull-up in charge and reads DEASSERTED. The
+	 * part can fail either way and no assumption about its resting level is
+	 * safe.
+	 *
+	 * Nothing in the firmware relies on one. The interlock sequence requires
+	 * the feedback to CHANGE on command before the oven may arm, which catches
+	 * a sensor stuck at either level (architecture §"Contactor feedback
+	 * failure modes"; src/contactor.h).
+	 *
+	 * Validation-only via gpio-keys; no input driver is enabled.
 	 */
 	opto_inputs {
 		compatible = "gpio-keys";

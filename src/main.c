@@ -5,7 +5,9 @@
  * labsc_filament_oven — application entry.
  *
  * Responsibilities (architecture, "Boot, Reset, Flashing" + "Safe State"):
- *   - Always boot DISARMED (or FAULTED); the heater can never self-arm.
+ *   - Never boot armable. main() leaves the state in INIT; only the Watchdog
+ *     thread's interlock sequence can advance it (see oven_state.h), and only
+ *     after a human has closed the contactor by hand.
  *   - Restore any latched fault so a safety trip survives the reboot.
  *   - Configure the field I/O, verify every required device, then release the
  *     PID / Output / Watchdog threads.
@@ -19,6 +21,7 @@
 #include "oven_state.h"
 #include "oven_threads.h"
 #include "oven_debug.h"
+#include "contactor.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -141,11 +144,26 @@ int main(void)
 	verify_devices();
 
 
+	/*
+	 * 3b. Prove the power path starts OPEN before this firmware becomes
+	 * armable. A contactor already closed at boot cannot have been closed by
+	 * us — no pulse train has run yet — so it is welded, stuck, or the
+	 * feedback is dead. On failure this latches FAULTED, and since arming is
+	 * refused while any fault is latched, the only way out is a reboot with
+	 * the contactor genuinely open.
+	 */
+	(void)contactor_boot_check();
+
 	/* 4. Start the 500 ms PID release timer. */
 	pid_thread_start();
 
-	/* 5. Leave INIT: DISARMED unless a fault already latched FAULTED. */
-	oven_state_boot_ok();
+	/*
+	 * 5. NOT a state transition any more. The system leaves INIT only when
+	 * the Watchdog thread has held its health pulse silent for the quiet
+	 * window with the contactor open (-> AWAIT_CONTACTOR), and reaches
+	 * DISARMED only once it has watched the operator close the interlock by
+	 * hand. main() cannot grant either; see oven_state.h.
+	 */
 
 	/*
 	 * 5b. Bench instrumentation, if this image has any. Empty inline in a

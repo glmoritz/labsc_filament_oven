@@ -21,6 +21,8 @@
 
 #include "shared.h"
 #include "oven_threads.h"
+#include "oven_state.h"
+#include "contactor.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
@@ -36,6 +38,26 @@
 LOG_MODULE_REGISTER(watchdog, LOG_LEVEL_INF);
 
 #define WD_PULSE_WIDTH_US        (100U)
+
+/*
+ * Interlock quiet window: how long this thread stays SILENT at startup before it
+ * is willing to enable the contactor at all.
+ *
+ * The interlock cannot hold the contactor closed without this pulse train, so a
+ * contactor still reading closed after a full second of silence has not been
+ * held there by us — it is welded, stuck, or the feedback is lying. This is the
+ * weld test, and it runs at every single boot.
+ */
+#define WD_QUIET_WINDOW_MS       (1000U)
+
+/*
+ * Drop-out deadline. In normal operation the contactor STAYS closed; the pulse
+ * train is a health signal, not the arm actuator. But when health is lost and we
+ * stop pulsing, the contactor must be observed OPEN within this deadline. Still
+ * closed after it = welded.
+ */
+#define WD_DROPOUT_CYCLES \
+	(OVEN_CONTACTOR_OPEN_GRACE_MS / OVEN_WATCHDOG_PERIOD_MS)
 #define WD_OUTPUT_STALE_CYCLES   (2U)   /* 200 ms — Output runs at 120 Hz    */
 #define WD_PID_STALE_CYCLES      (8U)   /* 800 ms — PID runs at 2 Hz          */
 #define WD_TIMER_STALE_CYCLES    (8U)   /* 800 ms — release timer at 2 Hz     */
@@ -82,6 +104,80 @@ static void emit_hw_wdt_pulse(void)
 	(void)gpio_pin_set_dt(&s_hw_wdt, 0);
 }
 
+/*
+ * Phase 1 of the interlock sequence: prove the contactor is open while we are
+ * deliberately not enabling it. Returns false (and has already raised the weld
+ * fault) if the contactor is closed at any point during the window.
+ */
+static bool interlock_quiet_window(void)
+{
+	uint32_t elapsed = 0U;
+
+	(void)gpio_pin_set_dt(&s_hw_wdt, 0);
+
+	while (elapsed < WD_QUIET_WINDOW_MS) {
+		if (contactor_is_closed()) {
+			LOG_ERR("contactor CLOSED with the health pulse silent "
+				"(%u ms in) — welded, stuck, or feedback lost",
+				elapsed);
+			fault_raise((uint32_t)OVEN_FAULT_CONTACTOR_WELD);
+			return false;
+		}
+		k_sleep(K_MSEC(OVEN_WATCHDOG_PERIOD_MS));
+		elapsed += OVEN_WATCHDOG_PERIOD_MS;
+	}
+
+	LOG_INF("contactor open through a %u ms silent window — interlock may "
+		"now be closed by hand", WD_QUIET_WINDOW_MS);
+	return true;
+}
+
+/*
+ * Phases 2-3, evaluated once per cycle.
+ *
+ *   pulsing == true  : we are enabling the interlock. Watch for the operator
+ *                      closing it (AWAIT_CONTACTOR -> DISARMED), and for it
+ *                      dropping out from under us (-> AWAIT_CONTACTOR).
+ *   pulsing == false : we have withdrawn enable. The contactor must open within
+ *                      the drop-out deadline or it is welded.
+ */
+static void interlock_monitor(bool pulsing, uint32_t *cycles_not_pulsing)
+{
+	bool closed = contactor_is_closed();
+	enum oven_state st = oven_state_get();
+
+	if (pulsing) {
+		*cycles_not_pulsing = 0U;
+
+		if (st == OVEN_STATE_AWAIT_CONTACTOR) {
+			if (closed && oven_state_contactor_confirmed()) {
+				LOG_INF("contactor closed and observed — power "
+					"path proven, oven is now armable");
+			}
+		} else if (!closed && ((st == OVEN_STATE_DISARMED) ||
+				       (st == OVEN_STATE_ARMED))) {
+			LOG_WRN("contactor dropped while enabled — returning to "
+				"AWAIT_CONTACTOR; close the interlock by hand");
+			oven_state_contactor_lost();
+		} else {
+			/* Closed and confirmed: the normal running condition. */
+		}
+
+		return;
+	}
+
+	/* Not pulsing: the interlock must let go, and we must see it happen. */
+	if (*cycles_not_pulsing <= WD_DROPOUT_CYCLES) {
+		(*cycles_not_pulsing)++;
+	} else if (closed) {
+		LOG_ERR("contactor STILL CLOSED %u ms after the health pulse "
+			"stopped — welded", (uint32_t)OVEN_CONTACTOR_OPEN_GRACE_MS);
+		fault_raise((uint32_t)OVEN_FAULT_CONTACTOR_WELD);
+	} else {
+		/* Opened as required. */
+	}
+}
+
 static void watchdog_thread_entry(void *p1, void *p2, void *p3)
 {
 	uint32_t last_pid = 0U;
@@ -90,6 +186,7 @@ static void watchdog_thread_entry(void *p1, void *p2, void *p3)
 	uint32_t pid_stale = 0U;
 	uint32_t output_stale = 0U;
 	uint32_t timer_stale = 0U;
+	uint32_t cycles_not_pulsing = 0U;
 
 	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
@@ -105,6 +202,18 @@ static void watchdog_thread_entry(void *p1, void *p2, void *p3)
 	/* Own the health-pulse pin: configured inactive before the first pulse. */
 	(void)gpio_pin_configure_dt(&s_hw_wdt, GPIO_OUTPUT_INACTIVE);
 	onchip_wdt_setup();
+
+	/*
+	 * Phase 1 of the interlock sequence, before this thread is willing to
+	 * enable anything. On failure the weld fault is already latched and the
+	 * state stays INIT, so arming is impossible; fall through into the normal
+	 * loop so telemetry and diagnostics keep running (stop driving, keep
+	 * monitoring).
+	 */
+	if (interlock_quiet_window()) {
+		(void)oven_state_interlock_ready();
+	}
+
 	last_pid = (uint32_t)atomic_get(&g_pid_seq);
 	last_output = (uint32_t)atomic_get(&g_output_seq);
 	last_timer = (uint32_t)atomic_get(&g_timer_ticks);
@@ -158,6 +267,13 @@ static void watchdog_thread_entry(void *p1, void *p2, void *p3)
 		} else {
 			(void)gpio_pin_set_dt(&s_hw_wdt, 0);
 		}
+
+		/*
+		 * Watch the contactor against what we just asked for. This is the
+		 * only place that owns the enable, so it is the only place that
+		 * can judge the answer.
+		 */
+		interlock_monitor(healthy, &cycles_not_pulsing);
 
 		k_sleep(K_MSEC(OVEN_WATCHDOG_PERIOD_MS));
 	}

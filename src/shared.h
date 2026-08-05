@@ -92,9 +92,24 @@ enum oven_fault_bit {
 	OVEN_FAULT_DEVICE_INIT    = (1 << 9),  /* a required device is not ready  */
 	OVEN_FAULT_BROWNOUT       = (1 << 10), /* brownout reset reason           */
 	OVEN_FAULT_RESTORED       = (1 << 11), /* a latched fault survived reboot */
+	OVEN_FAULT_CONTACTOR_WELD = (1 << 12), /* contactor closed when it must be open */
 	OVEN_FAULT_ASSERT         = (1 << 13), /* firmware invariant failed (soft assert) */
 };
 
+/*
+ * Grace period before "the contactor is still closed" counts as a weld.
+ *
+ * De-energizing is not instantaneous: the missing-pulse detector has to time
+ * out, the coil has to decay, the contacts have to physically part, and the
+ * optocoupler has to propagate the change. Declaring a weld faster than that
+ * would trip on every normal shutdown.
+ *
+ * [VERIFY] against the real hardware: this must exceed
+ *   missing-pulse timeout + contactor drop-out time + opto propagation,
+ * with margin. 1 s is a placeholder chosen to be obviously safe against false
+ * trips, not measured.
+ */
+#define OVEN_CONTACTOR_OPEN_GRACE_MS (1000U)
 
 /* --- Shared atomics (defined in shared.c) -------------------------------- */
 extern atomic_t g_setpoint_cc;      /* control setpoint, centi-degC           */
