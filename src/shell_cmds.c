@@ -29,8 +29,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 
 	shell_print(sh, "state   : %s", oven_state_name(oven_state_get()));
 	shell_print(sh, "fault   : 0x%08x", fault_word_get());
-	shell_print(sh, "temp A  : %ld cC", (long)atomic_get(&g_temp_a_cc));
-	shell_print(sh, "temp B  : %ld cC", (long)atomic_get(&g_temp_b_cc));
+	shell_print(sh, "filament: %ld cC  (A, control)", (long)atomic_get(&g_temp_a_cc));
+	shell_print(sh, "heat    : %ld cC  (B, protection)", (long)atomic_get(&g_temp_b_cc));
 	shell_print(sh, "heater  : %ld", (long)atomic_get(&g_heater_power));
 	shell_print(sh, "pid_seq : %ld", (long)atomic_get(&g_pid_seq));
 	shell_print(sh, "out_seq : %ld", (long)atomic_get(&g_output_seq));

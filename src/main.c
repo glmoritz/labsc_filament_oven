@@ -113,7 +113,7 @@ static void heartbeat(void)
 	}
 #endif
 
-	LOG_INF("state=%s fault=0x%08x A=%d.%02d C B=%d.%02d C hp=%ld pid=%ld out=%ld",
+	LOG_INF("state=%s fault=0x%08x filament=%d.%02d C heat=%d.%02d C hp=%ld pid=%ld out=%ld",
 		oven_state_name(st), fault_word_get(),
 		(int)(atomic_get(&g_temp_a_cc) / OVEN_CENTI),
 		(int)(atomic_get(&g_temp_a_cc) % OVEN_CENTI),
@@ -139,6 +139,7 @@ int main(void)
 
 	/* 3. Verify the thread-owned devices. */
 	verify_devices();
+
 
 	/* 4. Start the 500 ms PID release timer. */
 	pid_thread_start();

@@ -32,6 +32,31 @@ The controller shall:
 5. **Missing-pulse detector #2 (contactor enable)** — interlocked relay + contactor drop out on missing pulse; re-arm **only** via physical button.
 6. **Independent thermal cutoff** — mechanical capillary safety thermostat and/or one-shot thermal fuse with its switching element **in series with the heater power line**, breaking load current directly. It must NOT act via the contactor coil: a coil-series cutoff depends on the contactor opening and is defeated by welded contacts — exactly the failure this layer exists to survive. No firmware involved. Non-negotiable for unattended operation.
 
+## Thermal ladder — as built
+
+Three rungs, each of which must trip well before the next, so the cheap
+recoverable one acts first and the destructive one is never reached in normal
+fault handling:
+
+| Trip | Device | Acts on | Recoverable? |
+|---|---|---|---|
+| **110 °C** | firmware, sensor B in the heat chamber (`OVEN_SENSOR_B_ABS_LIMIT_CC`) | latches FAULTED, stops the keep-alive | yes |
+| **150 °C** | bimetallic thermostat | drops the contactor **coil** | yes, self-resetting or manual per part |
+| **300 °C** | thermal fuse | **in series with the heater element** | no — one-shot, must be replaced |
+
+Which rung is the real backstop matters. The 150 °C bimetallic acts through the
+contactor coil, so a **welded contactor defeats it** — it is an extra rung, not
+the last line, and layer 6 above is explicit about why. Only the 300 °C fuse,
+switching load current directly, survives a weld. Read "we have a bimetallic" as
+defence in depth, never as compliance with layer 6.
+
+The 40 °C gap between the firmware limit and the bimetallic is deliberate: it
+keeps a firmware trip from racing the mechanical one, so ordinary faults are
+handled in software and leave a diagnosable latched fault word instead of a
+silently opened contactor. **[VERIFY]** the lower bound on 110 °C — it must stay
+above the heat chamber's worst-case steady-state temperature with the filament
+chamber at its maximum setpoint, a figure that has not been measured yet.
+
 The SSR's dominant failure mode is **failed short** (it switches constantly under burst fire, dissipates real power, and dies closed). The contactor + missing-pulse interlock is the mitigation for that specific failure — it is doing real work in this design, not decoration. The thermal cutoff covers simultaneous failure of everything electronic, including design errors in this document.
 
 ---
@@ -201,12 +226,57 @@ Document the actual topology and update this analysis accordingly.
 
 Two thermocouples via MAX66xx SPI converters, **dual zone**, shared SPI bus, separate CS lines.
 
+## Physical zones (decided)
+
+The oven is **two chambers with forced convection between them**: the heater sits
+in the **heat chamber**; a fan blows that air into the **filament chamber**, which
+is what the process actually cares about.
+
+- **Heat chamber** — heater, hottest point in the system, hosts the failure that
+  starts a fire.
+- **Filament chamber** — downstream of the fan, always cooler than the heat
+  chamber, holds the filament. This is the controlled variable.
+
 ## Role separation (decided)
 
-- **Sensor A** = control input to the PID. Nothing else.
-- **Sensor B** = protection only: absolute safety-limit comparison + process diagnostics input. Never used by the PID.
+- **Sensor A** = **filament chamber**. Control input to the PID. Nothing else.
+- **Sensor B** = **heat chamber**. Protection only: absolute safety-limit
+  comparison + process diagnostics input. Never used by the PID.
 
-Rationale: the classic runaway is the control sensor detaching or reading low → PID sees "cold" → commands 100%. Sensor B's absolute limit catches this even though the two zones never numerically "agree."
+Rationale: the classic runaway is the control sensor detaching or reading low →
+PID sees "cold" → commands 100%. Sensor B's absolute limit catches this even
+though the two zones never numerically "agree."
+
+**Why the protection sensor goes in the HEAT chamber**, and the control sensor in
+the cooler one — the assignment is not arbitrary and reversing it is a safety
+regression:
+
+- The absolute limit must sit at the **hottest point**. Guarding the filament
+  chamber leaves the chamber that contains the heater with no absolute limit at
+  all.
+- It makes **fan failure** a covered failure rather than the worst one. Fan
+  stops → heat chamber climbs, filament chamber cools → the PID reads "cold" and
+  commands 100% → B trips on the heat chamber. With the sensors reversed this
+  same sequence is an undetected runaway in which the control sensor keeps
+  reporting that everything is fine.
+- Controlling on the filament chamber means the loop regulates the variable the
+  process cares about, instead of regulating the heat chamber and leaving the
+  filament in open loop.
+
+**Rejected: cascade control** (filament-chamber outer loop producing the heat
+chamber's setpoint). It performs better on paper and it is how you would build
+this with three sensors, but with two thermocouples it makes **both** sensors
+control inputs, which deletes the independent protection channel this section
+exists to define. It also inverts the fan-failure response: the outer loop, seeing
+the filament chamber cold, raises the heat-chamber setpoint and drives *into* the
+fault. Revisit only alongside a third, protection-dedicated thermocouple in the
+heat chamber.
+
+**Wiring is load-bearing.** The A↔B swap is already listed in the failure table as
+"mechanical prevention only" — software cannot tell the two apart at a cold start.
+With this assignment a swap puts the absolute limit on the cool chamber and the
+control loop on the hot one, i.e. exactly the reversed arrangement rejected above.
+Key and label the connectors.
 
 ## Part selection **[VERIFY against datasheets]**
 

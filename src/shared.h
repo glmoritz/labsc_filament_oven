@@ -32,6 +32,33 @@ typedef int32_t oven_temp_cc_t;            /* temperature, centi-degC          *
  * These are NOT in the OPC UA writable address space (architecture, "Boundary
  * rules"): a compromised client must not be able to move the safety limit.
  * Values are filament-dryer placeholders; retune per the physical oven.
+ *
+ * The absolute limit applies to SENSOR B = the HEAT CHAMBER (architecture,
+ * "Role separation"), which always runs hotter than the filament chamber the
+ * loop controls.
+ *
+ * It is the FIRST rung of a three-rung thermal ladder, and its value only makes
+ * sense read against the other two:
+ *
+ *   110 degC  this limit          firmware, recoverable, latches FAULTED
+ *   150 degC  bimetallic thermostat  drops the contactor COIL
+ *   300 degC  thermal fuse         in series with the heater element, one-shot
+ *
+ * Each rung must trip well before the next, so the cheap recoverable one acts
+ * first and the destructive one is never reached in normal fault handling. The
+ * 40 degC gap to the bimetallic is what keeps a firmware trip from racing the
+ * mechanical one.
+ *
+ * Note which rung is actually the last line: the bimetallic acts through the
+ * contactor coil, so a welded contactor defeats it (architecture, layer 6 —
+ * "it must NOT act via the contactor coil"). The 300 degC fuse, in series with
+ * the element, is the one that survives a weld. Do not treat the bimetallic as
+ * the backstop.
+ *
+ * [VERIFY] the lower bound: 110 degC must stay above the heat chamber's
+ * worst-case steady-state temperature with the filament chamber at its maximum
+ * setpoint, or the oven trips during a normal heat-up. That figure comes from
+ * the physical oven and has not been measured yet.
  */
 #define OVEN_SENSOR_B_ABS_LIMIT_CC   (11000)   /* 110.00 degC protection limit */
 #define OVEN_TEMP_VALID_MIN_CC       (-2000)   /* -20.00 degC plausibility     */
@@ -67,14 +94,15 @@ enum oven_fault_bit {
 	OVEN_FAULT_RESTORED       = (1 << 11), /* a latched fault survived reboot */
 };
 
+
 /* --- Shared atomics (defined in shared.c) -------------------------------- */
 extern atomic_t g_setpoint_cc;      /* control setpoint, centi-degC           */
 extern atomic_t g_kp_m;             /* PID gains x1000                        */
 extern atomic_t g_ki_m;
 extern atomic_t g_kd_m;
 extern atomic_t g_heater_power;     /* 0..OVEN_HEATER_MAX_POWER               */
-extern atomic_t g_temp_a_cc;        /* latest SENSOR A reading, telemetry     */
-extern atomic_t g_temp_b_cc;        /* latest SENSOR B reading, telemetry     */
+extern atomic_t g_temp_a_cc;        /* SENSOR A = FILAMENT chamber (control)  */
+extern atomic_t g_temp_b_cc;        /* SENSOR B = HEAT chamber (protection)   */
 extern atomic_t g_pid_seq;          /* monotonic liveness counter             */
 extern atomic_t g_output_seq;       /* monotonic liveness counter             */
 extern atomic_t g_timer_ticks;      /* 500 ms release-timer heartbeat         */

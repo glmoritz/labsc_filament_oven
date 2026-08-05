@@ -18,9 +18,20 @@
  *   - GPIO15 JTAG-source strap           -> active-low OUTPUT only (OPTO_OUT2)
  *   - GPIO16 ROM UART TX                 -> console, output-only
  *
- * Role assignment (architecture §"Sensors"):
- *   tc0 = TEMP1 (D4) = SENSOR A, control zone, PID input.
- *   tc1 = TEMP2 (D2) = SENSOR B, protection zone, absolute-limit only.
+ * Role assignment (architecture §"Role separation"). The oven is two chambers
+ * with a fan moving air from the heated one into the filament one:
+ *
+ *   tc0 = TEMP1 (D4) = SENSOR A = FILAMENT CHAMBER (the cooler, downstream one)
+ *                      control zone, PID input.
+ *   tc1 = TEMP2 (D2) = SENSOR B = HEAT CHAMBER (where the heater is, hottest)
+ *                      protection zone, absolute-limit only, never read by the PID.
+ *
+ * DO NOT SWAP THESE AT THE CONNECTORS. The protection sensor belongs at the
+ * hottest point, and this assignment is also what makes fan failure a covered
+ * failure: with the fan stopped the heat chamber climbs while the filament
+ * chamber cools, the PID reads "cold" and commands full power, and tc1 trips the
+ * absolute limit. Reversed, that same sequence is an undetected runaway.
+ * Software cannot detect the swap at a cold start — key and label the connectors.
  */
 
 #include <zephyr/dt-bindings/pinctrl/esp32c6-pinctrl.h>
@@ -157,12 +168,14 @@
 	 * detects OPEN thermocouple only (no short-to-GND/VCC) — the protection
 	 * sensor (tc1) would ideally be a MAX31855/31856; tracked in SAFETY-STATUS.
 	 */
+	/* SENSOR A — filament chamber (cool side). PID control input. */
 	tc0: max6675@0 {
 		compatible = "maxim,max6675";
 		reg = <0>;
 		spi-max-frequency = <DT_FREQ_M(4)>;
 	};
 
+	/* SENSOR B — heat chamber (hot side). Absolute safety limit only. */
 	tc1: max6675@1 {
 		compatible = "maxim,max6675";
 		reg = <1>;

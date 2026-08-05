@@ -95,11 +95,21 @@ static void pid_cycle(uint32_t delta_ms)
 	bool b_ok;
 	oven_temp_cc_t temp_b;
 
-	/* 1-2. Read control (A) then protection (B) zone. */
+	/*
+	 * 1-2. Read the control zone (A = filament chamber) then the protection
+	 * zone (B = heat chamber). See architecture, "Role separation": the loop
+	 * regulates the filament chamber, and the absolute limit watches the
+	 * hotter chamber that contains the heater.
+	 */
 	a_ok = acquire_sensor(s_tc_a, &g_temp_a_cc, (uint32_t)OVEN_FAULT_SENSOR_A);
 	b_ok = acquire_sensor(s_tc_b, &g_temp_b_cc, (uint32_t)OVEN_FAULT_SENSOR_B);
 
-	/* 3-4. Absolute safety limit on B — independent of the setpoint path. */
+	/*
+	 * 3-4. Absolute safety limit on B — independent of the setpoint path.
+	 * This is also what covers fan failure: with the air stopped the heat
+	 * chamber climbs while the filament chamber cools, so the control loop
+	 * reads "cold" and commands full power, and only this limit sees it.
+	 */
 	if (b_ok) {
 		temp_b = (oven_temp_cc_t)atomic_get(&g_temp_b_cc);
 		if (temp_b > OVEN_SENSOR_B_ABS_LIMIT_CC) {
