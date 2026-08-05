@@ -29,7 +29,7 @@ a real heater unattended.**
 | Software-only pulse generation (no HW PWM) | done | `output_thread.c`, `watchdog_thread.c` |
 | Pinned thread priorities, self-asserted | done | `oven_threads.h`, each thread |
 | PID control law (fixed-point; D-on-measurement; clamping anti-windup; bumpless) | **done** | `pid.c`, host-tested (`tests/pid/run.sh`); default gains 0 = inert |
-| Process-response diagnostics | **TODO** | ON-but-flat, OFF-but-rising, rate plausibility |
+| Process-response diagnostics | **DONE** | frozen reading (5 min), zone inversion while filament rises, powered-but-flat (60 s). See src/diagnostics.c; thresholds still [VERIFY] |
 | Contactor load-free sequencing + aux proof-test | **TODO** | needs aux-contact input mapping |
 | On-chip watchdog reset → FAULTED | **compiled out** | add a `watchdog0` alias to enable |
 | NVS mirror of fault record (survives power loss) | **TODO** | `storage_partition` reserved |

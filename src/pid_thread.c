@@ -9,9 +9,9 @@
  *
  * The acquisition, validation, safety-limit, control-law and liveness paths are
  * real. The control law is the fixed-point PID in pid.c (default gains 0 -> inert
- * and safe until tuned). Process diagnostics are not implemented yet. No dynamic
- * allocation; no unbounded blocking (the only wait is the bounded, driver-internal
- * SPI transfer inside the MAX6675 sensor read).
+ * and safe until tuned). Process-response diagnostics live in diagnostics.c and
+ * run at step 5. No dynamic allocation; no unbounded blocking (the only wait is
+ * the bounded, driver-internal SPI transfer inside the MAX6675 sensor read).
  */
 
 #include "shared.h"
@@ -19,6 +19,7 @@
 #include "oven_state.h"
 #include "pid.h"
 #include "pid_pub.h"
+#include "diagnostics.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -117,7 +118,17 @@ static void pid_cycle(uint32_t delta_ms)
 		}
 	}
 
-	/* 5. Process diagnostics: TODO (ON-but-flat, OFF-but-rising, rate). */
+	/*
+	 * 5. Process-response diagnostics. Deliberately runs on the PREVIOUS
+	 * cycle's commanded power (g_heater_power is written below), because that
+	 * is the power that has actually had time to act on the zones we just
+	 * measured. See diagnostics.h.
+	 */
+	diag_update((oven_temp_cc_t)atomic_get(&g_temp_a_cc), a_ok,
+		    (oven_temp_cc_t)atomic_get(&g_temp_b_cc), b_ok,
+		    (uint32_t)atomic_get(&g_heater_power),
+		    (oven_state_get() == OVEN_STATE_ARMED) &&
+			    (fault_word_get() == 0U));
 
 	/*
 	 * 6-7. Compute the control law (sensor A only) and publish the actuator

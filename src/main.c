@@ -22,6 +22,7 @@
 #include "oven_threads.h"
 #include "oven_debug.h"
 #include "contactor.h"
+#include "diagnostics.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -143,7 +144,6 @@ int main(void)
 	/* 3. Verify the thread-owned devices. */
 	verify_devices();
 
-
 	/*
 	 * 3b. Prove the power path starts OPEN before this firmware becomes
 	 * armable. A contactor already closed at boot cannot have been closed by
@@ -153,6 +153,9 @@ int main(void)
 	 * the contactor genuinely open.
 	 */
 	(void)contactor_boot_check();
+
+	/* 3c. Clear diagnostic history before the first control cycle. */
+	diag_reset();
 
 	/* 4. Start the 500 ms PID release timer. */
 	pid_thread_start();
