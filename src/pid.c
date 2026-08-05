@@ -246,6 +246,31 @@ uint32_t pid_update(struct pid_state *st, const struct pid_gains *g,
 			/* no integrator adjustment this cycle */
 		}
 
+		/*
+		 * ---- No integral action means no integral state ----
+		 * With Ki == 0 the accumulator can never evolve again: the
+		 * increment below is identically zero, so whatever is in yi_u
+		 * stays there forever. The bumpless retune above deposits
+		 * exactly such a residue — reconciling the integrator is how it
+		 * keeps the output continuous — and with Ki == 0 nothing washes
+		 * it out. The controller then reports a P-only law while quietly
+		 * adding a constant bias, which is indefensible for tuning and
+		 * worse for review.
+		 *
+		 * So: zero it. This is DELIBERATELY not bumpless — switching the
+		 * integral term off is allowed to step the output, because the
+		 * alternative is a hidden offset that outlives the gain that
+		 * created it. Turning I off is a structural change to the control
+		 * law, not a retune.
+		 *
+		 * Placed after the chain above so it overrides both the arm-edge
+		 * reset and the retune reconciliation, and runs on every cycle:
+		 * it also clears a wound-up integrator the moment Ki is set to 0,
+		 * not just on the cycle where the gain changed.
+		 */
+		if (gv.ki_m == 0) {
+			st->yi_u = 0;
+		}
 
 		/*
 		 * ---- Integral, trapezoidal ----
