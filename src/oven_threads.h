@@ -26,9 +26,22 @@
 #define OVEN_OUTPUT_PRIO     K_PRIO_COOP(2)
 #define OVEN_WATCHDOG_PRIO   K_PRIO_PREEMPT(CONFIG_NUM_PREEMPT_PRIORITIES - 1)
 
+/*
+ * Bench diagnostics thread (CONFIG_OVEN_DEBUG, src/oven_debug.c). Preemptible,
+ * so both cooperative real-time threads outrank it and it can never delay a
+ * control cycle or a keep-alive pulse. Placed below main and ABOVE the Watchdog
+ * on purpose: the Watchdog must stay the lowest-priority thread in the system,
+ * because its starvation is the detector. This thread cannot starve it — it is
+ * blocked on the cycle semaphore or on a timed sleep essentially all the time.
+ */
+#define OVEN_DEBUG_PRIO      K_PRIO_PREEMPT(12)
+BUILD_ASSERT(OVEN_DEBUG_PRIO < OVEN_WATCHDOG_PRIO,
+	     "the Watchdog must remain the lowest-priority thread in the system");
+
 #define OVEN_PID_STACK_SIZE       (2048)
 #define OVEN_OUTPUT_STACK_SIZE    (1536)
 #define OVEN_WATCHDOG_STACK_SIZE  (1536)
+#define OVEN_DEBUG_STACK_SIZE     (2048)
 
 /* Started by main() once the hardware is configured. */
 void pid_thread_start(void);

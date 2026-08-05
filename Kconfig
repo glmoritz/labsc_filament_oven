@@ -1,0 +1,113 @@
+# Copyright (c) 2026 Guilherme Luiz Moritz
+# SPDX-License-Identifier: Apache-2.0
+#
+# Application Kconfig — bench debug facilities only.
+#
+# Everything under OVEN_DEBUG is TEST/BENCH ONLY and defaults to 'n', so a field
+# image built from prj.conf alone contains none of it: no debug thread, no LED,
+# no trace, no preset gains. debug.conf is the only file that turns any of it on
+# (architecture, "Test & Validation Plan").
+
+menu "labsc_filament_oven debug facilities"
+
+config OVEN_DEBUG
+	bool "Bench debug facilities (NOT for field images)"
+	default n
+	help
+	  Master switch for the bench instrumentation: the status LED, the
+	  per-cycle PID trace and the preset bench tuning. Compiles in the
+	  debug thread (src/oven_debug.c) at a preemptible priority so it can
+	  never delay the two cooperative real-time threads.
+
+	  Leave this off for anything that drives a real oven.
+
+if OVEN_DEBUG
+
+config OVEN_DEBUG_LED
+	bool "PID-cycle status LED"
+	default y
+	depends on DT_HAS_WORLDSEMI_WS2812_I2S_ENABLED
+	select LED_STRIP
+	help
+	  Drive the on-module WS2812 RGB LED as a PID-cycle indicator: a white
+	  flash at the start of every control cycle, then red for a fraction of
+	  the rest of the cycle proportional to the commanded heater power.
+
+	  Requires the bench DT overlay that instantiates the LED (see
+	  debug/<board>.overlay).
+
+config OVEN_DEBUG_LED_LEVEL
+	int "Status LED brightness (0-255)"
+	default 48
+	range 1 255
+	depends on OVEN_DEBUG_LED
+	help
+	  Per-channel WS2812 level. These LEDs are painfully bright at full
+	  scale; the default is deliberately dim but clearly visible.
+
+config OVEN_DEBUG_LED_FLASH_MS
+	int "White cycle-start flash duration (ms)"
+	default 100
+	range 1 500
+	depends on OVEN_DEBUG_LED
+	help
+	  Width of the white flash that marks the start of each control cycle.
+	  The red power bar occupies the remainder of the cycle
+	  (OVEN_PID_PERIOD_MS minus this), so this must stay below the control
+	  period; the code BUILD_ASSERTs that.
+
+config OVEN_DEBUG_PID_TRACE
+	bool "Per-cycle PID diagnostics trace"
+	default y
+	depends on LOG
+	help
+	  Compile the diagnostics capture into the control law (pid.c records
+	  the term breakdown into its state) and emit two log lines per control
+	  cycle from the debug thread: the loop I/O line and the term-breakdown
+	  line.
+
+	  The capture is plain assignment into caller-owned state — no locking,
+	  no allocation, nothing that can block the PID thread. With this option
+	  off, not one byte of it is compiled in.
+
+config OVEN_DEBUG_PRESET
+	bool "Apply bench setpoint and gains at boot"
+	default y
+	help
+	  Seed the shared setpoint and gains at startup so the loop does
+	  something observable without an OPC UA client or a shell session.
+
+	  This does NOT arm the oven. The system still boots DISARMED and the
+	  Output thread still refuses to pulse the SSR keep-alive until it is
+	  armed and fault-free, so a non-zero commanded power energizes nothing.
+
+if OVEN_DEBUG_PRESET
+
+config OVEN_DEBUG_SETPOINT_CC
+	int "Bench setpoint (centi-degC)"
+	default 6000
+	help
+	  Must sit inside the plausibility window (OVEN_TEMP_VALID_MIN_CC ..
+	  OVEN_TEMP_VALID_MAX_CC) and below the protection-zone absolute limit
+	  (OVEN_SENSOR_B_ABS_LIMIT_CC); the code BUILD_ASSERTs both. Default is
+	  60.00 degC.
+
+config OVEN_DEBUG_KP_M
+	int "Bench proportional gain, x1000"
+	default 1000
+
+config OVEN_DEBUG_KI_M
+	int "Bench integral gain, x1000"
+	default 1000
+
+config OVEN_DEBUG_KD_M
+	int "Bench derivative gain, x1000"
+	default 0
+
+endif # OVEN_DEBUG_PRESET
+
+endif # OVEN_DEBUG
+
+endmenu
+
+source "Kconfig.zephyr"

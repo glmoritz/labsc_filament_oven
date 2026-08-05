@@ -58,6 +58,52 @@ struct pid_gains {
 	int32_t kd_m;   /* derivative gain   x1000, in [MIN,MAX] (0 = PI) */
 };
 
+/*
+ * ---- Per-cycle diagnostics ------------------------------------------------
+ *
+ * A snapshot of the control law's internals, so a diagnostics consumer can show
+ * WHY the controller asked for a given power instead of just the number. Filled
+ * by pid_update() as a straight sequence of assignments into the caller's own
+ * state: no locking, no allocation, nothing that can block or fail.
+ *
+ * DELIBERATELY UNCONDITIONAL. There is no debug/release variant of this file:
+ * the capture is compiled and executed identically in every build, so the
+ * instruction path, the timing and the stack usage you validate on the bench
+ * are the ones that ship. A field image simply has no consumer for the data and
+ * publishes it into a buffer nobody reads. Do not wrap any of this in a Kconfig
+ * guard — that would make the control law's behaviour configuration-dependent,
+ * which is exactly what this project refuses to do.
+ *
+ * The four signal fields are in the control law's INTERNAL scale, where one
+ * actuator half-cycle is OVEN_PID_TRACE_SCALE. Anything that formats them must
+ * scale down; nothing here is a float.
+ */
+#define OVEN_PID_TRACE_SCALE  (1000000LL)
+
+/* Which rail the unsaturated sum was pinned to — this is the anti-windup event. */
+enum pid_sat {
+	PID_SAT_LOW  = -1,   /* pinned at 0; the actuator cannot cool         */
+	PID_SAT_NONE = 0,    /* inside the linear range                       */
+	PID_SAT_HIGH = 1,    /* pinned at OVEN_HEATER_MAX_POWER               */
+};
+
+struct pid_diag {
+	int32_t sp_cc;          /* validated setpoint,     centi-degC         */
+	int32_t pv_cc;          /* validated measurement,  centi-degC         */
+	int32_t e_cc;           /* error = sp - pv,        centi-degC         */
+	int32_t dpv_cc;         /* pv[k] - pv[k-1],        centi-degC         */
+	struct pid_gains g;     /* gains actually used (validated + clamped)  */
+	int64_t yp_u;           /* P contribution,         internal scale     */
+	int64_t yi_u;           /* I accumulator AFTER this step              */
+	int64_t yd_u;           /* D contribution,         internal scale     */
+	int64_t y_unsat_u;      /* yp+yi+yd BEFORE clamping (0 when inactive) */
+	uint32_t out;           /* final command, half-cycles                 */
+	int8_t sat;             /* enum pid_sat — the windup indicator        */
+	bool retuned;           /* bumpless retune ran this step              */
+	bool arm_edge;          /* DISARMED->ARMED: integrator restarted      */
+	bool active;            /* controller was allowed to act              */
+};
+
 /* Controller state — caller-owned, zeroed by pid_reset(). */
 struct pid_state {
 	int64_t yi_u;        /* integral accumulator, internal fixed-point   */
@@ -68,6 +114,7 @@ struct pid_state {
 	struct pid_gains g_prev;  /* previously-applied (validated) gains    */
 	bool primed;         /* histories valid                              */
 	bool active_prev;    /* previous active flag (arm-edge detection)    */
+	struct pid_diag diag;     /* last cycle's internals (always filled)  */
 };
 
 /* Reset all state to a safe, un-wound-up zero. */
